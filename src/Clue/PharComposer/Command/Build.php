@@ -6,6 +6,7 @@ use Clue\PharComposer\Phar\Packager;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputInterface;
+use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
 
 class Build extends Command
@@ -28,7 +29,9 @@ class Build extends Command
         $this->setName('build')
              ->setDescription('Build phar for the given composer project')
              ->addArgument('project', InputArgument::OPTIONAL, 'Path to project directory or composer.json', '.')
-             ->addArgument('target', InputArgument::OPTIONAL, 'Path to write phar output to (defaults to project name)');
+             ->addArgument('target', InputArgument::OPTIONAL, 'Path to write phar output to (defaults to project name)')
+             ->addOption('main', 'm', InputOption::VALUE_REQUIRED, 'Relative path to the entrypoint script (meant for inclusion, not executable by default)')
+             ->addOption('executable', 'e', InputOption::VALUE_NONE, 'Make the resulting phar executable (effective only if --main option is used)');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output)
@@ -39,8 +42,15 @@ class Build extends Command
         $pharer = $this->packager->getPharer($input->getArgument('project'));
 
         $target = $input->getArgument('target');
+        $main = $input->getOption('main');
+
         if ($target !== null) {
             $pharer->setTarget($target);
+        }
+
+        if ($main !== null) {
+            $pharer->setMain($main);
+            $pharer->setExecutable($input->getOption('executable'));
         }
 
         $pharer->build();

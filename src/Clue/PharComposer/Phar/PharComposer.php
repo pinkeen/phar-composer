@@ -13,6 +13,20 @@ class PharComposer
 {
     private $package;
     private $main = null;
+    /**
+     * Whether the main entrypoint script should be treated as executable.
+     *
+     * This causes the resulting PHAR to have executable permissions and
+     * a shebang line prepended. Note that PHARs containing a shebang cannot
+     * be included directly into scripts.
+     *
+     * If `null` then executability is determined automatically:
+     *  - For build-time defined main it's non-executable by default.
+     *  - For main configured in package's `composer.json` bin setting
+     *    it's always treated as executable.
+     * @var bool|null
+     */
+    private $executable = null;
     private $target = null;
     private $logger;
     private $step = '?';
@@ -71,6 +85,23 @@ class PharComposer
     }
 
     /**
+     * Find path to main bin based on composer package bin files definition
+     *
+     * @return string
+     * @throws \UnexpectedValueException
+     */
+    public function getComposerPackageMainBin()
+    {
+        foreach ($this->package->getBins() as $path) {
+            if (!file_exists($this->package->getDirectory() . $path)) {
+                throw new \UnexpectedValueException('Bin file "' . $path . '" does not exist');
+            }
+
+            return $path;
+        }
+    }
+
+    /**
      * Get path to main bin (relative to package directory)
      *
      * @return string
@@ -79,16 +110,47 @@ class PharComposer
     public function getMain()
     {
         if ($this->main === null) {
-            foreach ($this->package->getBins() as $path) {
-                if (!file_exists($this->package->getDirectory() . $path)) {
-                    throw new \UnexpectedValueException('Bin file "' . $path . '" does not exist');
-                }
-                $this->main = $path;
-                break;
+            $this->main = $this->getComposerPackageMainBin();
+
+            // Assume package bins to be executable
+            if (null === $this->executable) {
+                $this->executable = true;
+            }
+        } else {
+            if ($this->executable === null) {
+                // If main script is build-time defined but executability is
+                // not configured then assume it's an entrypoint meant
+                // for inclusion and thus skip adding shebang / setting
+                // executability to allow including the whole PHAR file.
+                $this->executable = false;
             }
         }
+
         return $this->main;
     }
+
+    /**
+     * Force executability of the resulting PHAR file.
+     *
+     * @param bool $executable
+     * @return $this
+     */
+    public function setExecutable($executable)
+    {
+        $this->executable = $executable;
+        return $this;
+    }
+
+    /**
+     * Whether the resulting PHAR is executable.
+     *
+     * @return bool
+     */
+    public function isExecutable()
+    {
+        return $this->executable;
+    }
+
 
     /**
      * set path to main bin (relative to package directory)
@@ -184,19 +246,38 @@ class PharComposer
                 ->banner("Bundled by phar-composer with the help of php-box.\n\n@link https://github.com/clue/phar-composer");
 
             $lines = file($this->package->getDirectory() . $main, FILE_IGNORE_NEW_LINES);
+            $shebang = false;
+
             if (substr($lines[0], 0, 2) === '#!') {
-                $this->log('    Using referenced shebang "'. $lines[0] . '"');
-                $generator->shebang($lines[0]);
+                $shebang = $lines[0];
 
                 // remove shebang from main file and add (overwrite)
                 unset($lines[0]);
                 $targetPhar->addFromString($main, implode("\n", $lines));
+
+                if (!$this->isExecutable()) {
+                    $this->log('    NOTE: Removed shebang from the manually defined main script');
+                }
+            }
+
+            if ($this->isExecutable()) {
+                if (false === $shebang) {
+                    $this->log('    Using default shebang');
+                } else {
+                    $this->log('    Using referenced shebang "'. $shebang . '"');
+                    $generator->shebang($shebang);
+                }
+            } else {
+                $this->log('    Manually defined main script treated as entrypoint');
+                $generator->shebang('');
             }
 
             $targetPhar->setStub($generator->generate());
 
-            $chmod = octdec(substr(decoct(fileperms($this->package->getDirectory() . $main)),-4));
-            $this->log('    Using referenced chmod ' . sprintf('%04o', $chmod));
+            if ($this->isExecutable()) {
+                $chmod = octdec(substr(decoct(fileperms($this->package->getDirectory() . $main)),-4));
+                $this->log('    Using referenced chmod ' . sprintf('%04o', $chmod));
+            }
         }
 
         // stop buffering contents in memory and write to file
